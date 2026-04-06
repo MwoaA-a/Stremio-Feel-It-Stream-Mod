@@ -15,6 +15,7 @@ using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using System.IO;
 using System.Net;
+using System.Net.Sockets;
 using System.Net.WebSockets;
 using System.Reflection;
 using System.Runtime.InteropServices;
@@ -157,6 +158,14 @@ static class StatusChecker
 
     public static bool IsEnvVarSet()
     {
+        // CDP is now managed per-process by the injector (not via global env var).
+        // A global var actually causes conflicts with other WebView2 apps.
+        // Return true if injector is running (it handles CDP), false otherwise.
+        return IsInjectorRunning();
+    }
+
+    public static bool HasLegacyGlobalVar()
+    {
         string val = Environment.GetEnvironmentVariable(
             FISPaths.ENV_VAR_NAME, EnvironmentVariableTarget.User);
         return val != null && val.Contains("--remote-debugging-port");
@@ -286,32 +295,26 @@ static class InstallerOps
             }
         }
 
-        // 5. Set environment variable
-        progress("Setting CDP variable...", false);
+        // 5. Clean up global CDP variable (now handled per-process by injector)
+        // Setting this globally causes port conflicts: ALL WebView2 apps (Windows widgets,
+        // MSN feed, etc.) try to bind the same CDP port, blocking Stremio.
+        progress("Configuring CDP...", false);
         try
         {
-            // Check if already set with different value
             string existing = Environment.GetEnvironmentVariable(
                 FISPaths.ENV_VAR_NAME, EnvironmentVariableTarget.User);
-            if (existing != null && !existing.Contains("--remote-debugging-port"))
-            {
-                // Append our flag
-                string newVal = existing + " " + FISPaths.ENV_VAR_VALUE;
-                Environment.SetEnvironmentVariable(
-                    FISPaths.ENV_VAR_NAME, newVal, EnvironmentVariableTarget.User);
-                progress("  Value appended to existing", false);
-            }
-            else
+            if (existing != null && existing.Contains("--remote-debugging-port"))
             {
                 Environment.SetEnvironmentVariable(
-                    FISPaths.ENV_VAR_NAME, FISPaths.ENV_VAR_VALUE, EnvironmentVariableTarget.User);
-                progress("  CDP variable configured", false);
+                    FISPaths.ENV_VAR_NAME, null, EnvironmentVariableTarget.User);
+                progress("  Removed global CDP variable (prevents conflicts)", false);
             }
+            progress("  CDP managed per-process by injector", false);
         }
         catch (Exception ex)
         {
-            progress("ERROR env var: " + ex.Message, true);
-            return;
+            progress("WARNING: " + ex.Message, false);
+            // Non-critical — injector handles CDP per-process regardless
         }
 
         // 6. Create startup shortcut
@@ -598,10 +601,14 @@ static class Injector
         }
     }
 
+    // The CDP port actually in use (may differ from CDP_PORT if 9222 is occupied)
+    static int activeCdpPort = FISPaths.CDP_PORT;
+
     static void MonitorLoop()
     {
         int lastPid = -1;
         string lastPageId = null;
+        bool didRestart = false;
 
         while (true)
         {
@@ -616,6 +623,7 @@ static class Injector
                         Logger.Log("[FIS] Stremio closed (was PID " + lastPid + ")");
                         lastPid = -1;
                         lastPageId = null;
+                        didRestart = false;
                     }
                     Thread.Sleep(3000);
                     continue;
@@ -628,14 +636,29 @@ static class Injector
                     Logger.Log("[FIS] Stremio detected (PID " + stremio.Id + ")");
 
                     string wsUrl = WaitForCDP(stremio, out lastPageId);
-                    if (wsUrl == null)
+
+                    if (wsUrl == null && !didRestart)
                     {
-                        Logger.Log("[FIS] CDP not available, will retry...");
+                        // CDP not available — Stremio was launched without the env var,
+                        // or another WebView2 app stole the port. Restart Stremio as a
+                        // child of this process with a guaranteed free CDP port.
+                        Logger.Log("[FIS] CDP not available, restarting Stremio with CDP...");
+                        didRestart = true;
+                        RestartStremioWithCDP();
                         lastPid = -1;
-                        Thread.Sleep(3000);
+                        Thread.Sleep(5000);
                         continue;
                     }
 
+                    if (wsUrl == null)
+                    {
+                        Logger.Log("[FIS] CDP still not available after restart, will keep retrying...");
+                        lastPid = -1;
+                        Thread.Sleep(10000);
+                        continue;
+                    }
+
+                    didRestart = false;
                     Thread.Sleep(5000);
 
                     if (!File.Exists(FISPaths.BundlePath))
@@ -654,7 +677,7 @@ static class Injector
                 else
                 {
                     string currentPageId;
-                    string currentWsUrl = CdpClient.FindStremioPage(out currentPageId);
+                    string currentWsUrl = CdpClient.FindStremioPage(activeCdpPort, out currentPageId);
                     if (currentWsUrl != null && currentPageId != null && currentPageId != lastPageId)
                     {
                         Logger.Log("[FIS] Page changed (" + lastPageId + " -> " + currentPageId + ")");
@@ -676,6 +699,79 @@ static class Injector
         }
     }
 
+    static void RestartStremioWithCDP()
+    {
+        // Kill current Stremio (it launched without CDP or with port conflict)
+        try
+        {
+            Process[] procs = Process.GetProcessesByName(FISPaths.STREMIO_PROCESS);
+            for (int i = 0; i < procs.Length; i++)
+            {
+                try { procs[i].Kill(); } catch { }
+            }
+        }
+        catch { }
+
+        Thread.Sleep(2000);
+
+        // Find a free port — avoids conflicts with Windows widgets / other WebView2 apps
+        // that may have grabbed port 9222 via the old global env var.
+        activeCdpPort = FindAvailablePort(FISPaths.CDP_PORT);
+        string envValue = "--remote-debugging-port=" + activeCdpPort;
+        Environment.SetEnvironmentVariable(FISPaths.ENV_VAR_NAME, envValue);
+        Logger.Log("[FIS] Using CDP port " + activeCdpPort);
+
+        // Relaunch Stremio as child process — UseShellExecute=false means it inherits
+        // our env var, so only THIS Stremio instance gets CDP enabled.
+        try
+        {
+            ProcessStartInfo psi = new ProcessStartInfo();
+            psi.FileName = FISPaths.StremioExe;
+            psi.UseShellExecute = false;
+            Process.Start(psi);
+            Logger.Log("[FIS] Stremio relaunched with per-process CDP on port " + activeCdpPort);
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("[FIS] Failed to relaunch Stremio: " + ex.Message);
+        }
+    }
+
+    /// Finds the first available port starting from the preferred port.
+    /// Scans up to 10 ports to avoid conflicts with other WebView2 apps.
+    static int FindAvailablePort(int preferred)
+    {
+        for (int port = preferred; port < preferred + 10; port++)
+        {
+            if (!IsPortListening(port))
+                return port;
+            Logger.Log("[FIS] Port " + port + " is occupied, trying next...");
+        }
+        // Extremely unlikely: all 10 ports taken. Fall back to preferred.
+        Logger.Log("[FIS] WARNING: All ports " + preferred + "-" + (preferred + 9) + " occupied!");
+        return preferred;
+    }
+
+    /// Checks if anything is listening on the given port.
+    static bool IsPortListening(int port)
+    {
+        try
+        {
+            using (TcpClient client = new TcpClient())
+            {
+                IAsyncResult ar = client.BeginConnect("127.0.0.1", port, null, null);
+                bool connected = ar.AsyncWaitHandle.WaitOne(1000);
+                if (connected)
+                {
+                    try { client.EndConnect(ar); } catch { }
+                    return true;
+                }
+                return false;
+            }
+        }
+        catch { return false; }
+    }
+
     static Process FindStremioProcess()
     {
         try
@@ -694,10 +790,19 @@ static class Injector
         {
             if (stremio.HasExited) return null;
             Thread.Sleep(1000);
-            string wsUrl = CdpClient.FindStremioPage(out pageId);
+
+            // After 8 seconds, if nothing is listening on the CDP port, give up early.
+            // This avoids wasting 30s when Stremio was started without the CDP env var.
+            if (attempt == 8 && !IsPortListening(activeCdpPort))
+            {
+                Logger.Log("[FIS] CDP port " + activeCdpPort + " not listening after 8s — Stremio needs restart");
+                return null;
+            }
+
+            string wsUrl = CdpClient.FindStremioPage(activeCdpPort, out pageId);
             if (wsUrl != null)
             {
-                Logger.Log("[FIS] CDP connected, page ID: " + pageId);
+                Logger.Log("[FIS] CDP connected on port " + activeCdpPort + ", page ID: " + pageId);
                 return wsUrl;
             }
         }
@@ -711,7 +816,7 @@ static class Injector
 
 static class CdpClient
 {
-    public static string FindStremioPage(out string pageId)
+    public static string FindStremioPage(int port, out string pageId)
     {
         pageId = null;
         try
@@ -719,7 +824,7 @@ static class CdpClient
             using (WebClient wc = new WebClient())
             {
                 wc.Proxy = null;
-                string json = wc.DownloadString("http://127.0.0.1:" + FISPaths.CDP_PORT + "/json");
+                string json = wc.DownloadString("http://127.0.0.1:" + port + "/json");
 
                 int searchPos = 0;
                 while (true)
@@ -1059,10 +1164,10 @@ class InstallerForm : Form
         y += 24;
 
         lblStremio = AddStatusRow(ref y, "Stremio Desktop");
-        lblBundle = AddStatusRow(ref y, "Bundle FIS");
-        lblEnvVar = AddStatusRow(ref y, "Variable CDP");
+        lblBundle = AddStatusRow(ref y, "FIS Bundle");
+        lblEnvVar = AddStatusRow(ref y, "CDP Port");
         lblStartup = AddStatusRow(ref y, "Auto-start");
-        lblInjector = AddStatusRow(ref y, "Injecteur");
+        lblInjector = AddStatusRow(ref y, "Injector");
         y += 8;
 
         // ── Separator ──
@@ -1196,14 +1301,21 @@ class InstallerForm : Form
         string bundleInfo = bundleOk ? StatusChecker.GetBundleVersion() : "Not installed";
         SetStatus(lblBundle, bundleOk, bundleInfo);
 
-        SetStatus(lblEnvVar, StatusChecker.IsEnvVarSet(),
-            StatusChecker.IsEnvVarSet() ? "Configured" : "Not configured");
+        // CDP status: warn if legacy global var still present
+        bool injectorUp = StatusChecker.IsInjectorRunning();
+        bool legacyVar = StatusChecker.HasLegacyGlobalVar();
+        if (legacyVar)
+            SetStatus(lblEnvVar, false, "Global (may conflict)");
+        else if (injectorUp)
+            SetStatus(lblEnvVar, true, "Per-process");
+        else
+            SetStatus(lblEnvVar, false, "Not active");
 
         SetStatus(lblStartup, StatusChecker.IsStartupShortcutPresent(),
             StatusChecker.IsStartupShortcutPresent() ? "Enabled" : "Disabled");
 
-        SetStatus(lblInjector, StatusChecker.IsInjectorRunning(),
-            StatusChecker.IsInjectorRunning() ? "Active" : "Inactive");
+        SetStatus(lblInjector, injectorUp,
+            injectorUp ? "Active" : "Inactive");
     }
 
     void LogLine(string text, bool isError)
