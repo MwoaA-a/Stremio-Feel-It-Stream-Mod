@@ -568,6 +568,71 @@ static class Updater
 
 static class Injector
 {
+    [DllImport("user32.dll")]
+    static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
+    const int SW_HIDE = 0;
+    const int SW_SHOW = 5;
+    const int SW_RESTORE = 9;
+
+    static SplashForm activeSplash = null;
+
+    static void ShowSplash()
+    {
+        if (activeSplash != null) return;
+        Thread t = new Thread(() =>
+        {
+            Application.EnableVisualStyles();
+            activeSplash = new SplashForm();
+            Application.Run(activeSplash);
+            activeSplash = null;
+        });
+        t.SetApartmentState(ApartmentState.STA);
+        t.IsBackground = true;
+        t.Start();
+        Thread.Sleep(300);
+    }
+
+    static void CloseSplash()
+    {
+        SplashForm s = activeSplash;
+        if (s == null) return;
+        try { s.Invoke(new Action(() => s.Close())); }
+        catch { }
+    }
+
+    static void HideStremioWindows()
+    {
+        try
+        {
+            Process[] procs = Process.GetProcessesByName(FISPaths.STREMIO_PROCESS);
+            for (int i = 0; i < procs.Length; i++)
+            {
+                procs[i].Refresh();
+                if (procs[i].MainWindowHandle != IntPtr.Zero)
+                    ShowWindow(procs[i].MainWindowHandle, SW_HIDE);
+            }
+        }
+        catch { }
+    }
+
+    static void ShowStremioWindows()
+    {
+        try
+        {
+            Process[] procs = Process.GetProcessesByName(FISPaths.STREMIO_PROCESS);
+            for (int i = 0; i < procs.Length; i++)
+            {
+                procs[i].Refresh();
+                if (procs[i].MainWindowHandle != IntPtr.Zero)
+                {
+                    ShowWindow(procs[i].MainWindowHandle, SW_RESTORE);
+                    ShowWindow(procs[i].MainWindowHandle, SW_SHOW);
+                }
+            }
+        }
+        catch { }
+    }
+
     public static void Run()
     {
         Logger.Log("[FIS] Injector starting (background mode)...");
@@ -629,6 +694,7 @@ static class Injector
                         lastPageId = null;
                         waitingForRestart = false;
                         restartRetries = 0;
+                        CloseSplash();
                     }
                     Thread.Sleep(3000);
                     continue;
@@ -644,14 +710,21 @@ static class Injector
 
                     if (waitingForRestart)
                     {
-                        // We just restarted Stremio with CDP — wait on the chosen port
+                        // Post-restart: splash already showing, wait for CDP
                         wsUrl = WaitForCDP(stremio, out lastPageId);
                     }
                     else
                     {
-                        // Fresh detection — quick scan all ports (fast: ~1-2s)
-                        Thread.Sleep(3000);
+                        // Fresh detection — quick scan all ports
+                        Thread.Sleep(2000);
                         wsUrl = ScanForStremioCDP(out lastPageId);
+
+                        if (wsUrl == null)
+                        {
+                            // No CDP — show splash overlay while we restart
+                            ShowSplash();
+                            Logger.Log("[FIS] Splash shown");
+                        }
                     }
 
                     if (wsUrl != null)
@@ -665,6 +738,7 @@ static class Injector
                         if (!File.Exists(FISPaths.BundlePath))
                         {
                             Logger.Log("[FIS] Bundle not found: " + FISPaths.BundlePath);
+                            CloseSplash();
                             Thread.Sleep(3000);
                             continue;
                         }
@@ -674,10 +748,12 @@ static class Injector
 
                         bool ok = CdpClient.InjectBundle(wsUrl, bundle);
                         Logger.Log("[FIS] Injection: " + (ok ? "OK" : "FAILED"));
+
+                        CloseSplash();
                     }
                     else if (restartRetries < 3)
                     {
-                        // No CDP — restart Stremio with a free CDP port
+                        // No CDP — restart Stremio (splash stays visible)
                         restartRetries++;
                         waitingForRestart = true;
                         Logger.Log("[FIS] No Stremio CDP (attempt " + restartRetries + "/3), restarting...");
@@ -692,6 +768,7 @@ static class Injector
                         waitingForRestart = false;
                         restartRetries = 0;
                         CleanupGlobalCdpVar();
+                        CloseSplash();
                         lastPid = -1;
                         Thread.Sleep(30000);
                         continue;
@@ -1537,5 +1614,102 @@ class InstallerForm : Form
                 SetBusy(false);
             }
         });
+    }
+}
+
+// ============================================================
+//  Splash Screen (shown during Stremio restart)
+// ============================================================
+
+class SplashForm : Form
+{
+    System.Windows.Forms.Timer dotTimer;
+    Label lblStatus;
+    int dotCount = 0;
+
+    public SplashForm()
+    {
+        this.FormBorderStyle = FormBorderStyle.None;
+        this.StartPosition = FormStartPosition.CenterScreen;
+        this.Size = new Size(400, 160);
+        this.BackColor = Color.FromArgb(10, 10, 10);
+        this.TopMost = true;
+        this.ShowInTaskbar = false;
+
+        // Red accent bar at top
+        Panel bar = new Panel();
+        bar.BackColor = Color.FromArgb(230, 57, 70);
+        bar.Location = new Point(0, 0);
+        bar.Size = new Size(this.Width, 3);
+        this.Controls.Add(bar);
+
+        // Brand: FEEL IT . STREAM
+        Font brandFont = new Font("Segoe UI", 20f, FontStyle.Bold);
+        int w1 = TextRenderer.MeasureText("FEEL IT", brandFont).Width;
+        int wDot = TextRenderer.MeasureText(".", brandFont).Width;
+        int w2 = TextRenderer.MeasureText("STREAM", brandFont).Width;
+        int totalW = w1 + wDot + w2 - 16;
+        int sx = (this.Width - totalW) / 2;
+
+        Label lbl1 = new Label();
+        lbl1.Text = "FEEL IT";
+        lbl1.Font = brandFont;
+        lbl1.ForeColor = Color.White;
+        lbl1.AutoSize = true;
+        lbl1.Location = new Point(sx, 35);
+        this.Controls.Add(lbl1);
+
+        Label lblDot = new Label();
+        lblDot.Text = ".";
+        lblDot.Font = brandFont;
+        lblDot.ForeColor = Color.FromArgb(230, 57, 70);
+        lblDot.AutoSize = true;
+        lblDot.Location = new Point(sx + w1 - 8, 35);
+        this.Controls.Add(lblDot);
+
+        Label lbl2 = new Label();
+        lbl2.Text = "STREAM";
+        lbl2.Font = brandFont;
+        lbl2.ForeColor = Color.White;
+        lbl2.AutoSize = true;
+        lbl2.Location = new Point(sx + w1 + wDot - 14, 35);
+        this.Controls.Add(lbl2);
+
+        // "Loading Stremio..." with animated dots
+        lblStatus = new Label();
+        lblStatus.Text = "Loading Stremio";
+        lblStatus.Font = new Font("Segoe UI", 10f);
+        lblStatus.ForeColor = Color.FromArgb(139, 143, 163);
+        lblStatus.TextAlign = ContentAlignment.MiddleCenter;
+        lblStatus.Size = new Size(this.Width, 30);
+        lblStatus.Location = new Point(0, 100);
+        this.Controls.Add(lblStatus);
+
+        dotTimer = new System.Windows.Forms.Timer();
+        dotTimer.Interval = 400;
+        dotTimer.Tick += OnDotTick;
+        dotTimer.Start();
+    }
+
+    void OnDotTick(object sender, EventArgs e)
+    {
+        dotCount = (dotCount + 1) % 4;
+        lblStatus.Text = "Loading Stremio" + new string('.', dotCount);
+    }
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using (Pen p = new Pen(Color.FromArgb(30, 255, 255, 255)))
+        {
+            e.Graphics.DrawRectangle(p, 0, 0, this.Width - 1, this.Height - 1);
+        }
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        dotTimer.Stop();
+        dotTimer.Dispose();
+        base.OnFormClosing(e);
     }
 }
