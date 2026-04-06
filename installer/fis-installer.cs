@@ -611,7 +611,8 @@ static class Injector
 
         int lastPid = -1;
         string lastPageId = null;
-        bool didRestart = false;
+        bool waitingForRestart = false;
+        int restartRetries = 0;
 
         while (true)
         {
@@ -626,7 +627,8 @@ static class Injector
                         Logger.Log("[FIS] Stremio closed (was PID " + lastPid + ")");
                         lastPid = -1;
                         lastPageId = null;
-                        didRestart = false;
+                        waitingForRestart = false;
+                        restartRetries = 0;
                     }
                     Thread.Sleep(3000);
                     continue;
@@ -638,52 +640,66 @@ static class Injector
                     lastPageId = null;
                     Logger.Log("[FIS] Stremio detected (PID " + stremio.Id + ")");
 
-                    string wsUrl = WaitForCDP(stremio, out lastPageId);
+                    string wsUrl = null;
 
-                    if (wsUrl == null && !didRestart)
+                    if (waitingForRestart)
                     {
-                        // CDP not available — Stremio was launched without the env var,
-                        // or another WebView2 app stole the port. Restart Stremio with
-                        // a temporary user-scope env var on a free port.
-                        Logger.Log("[FIS] CDP not available, restarting Stremio with CDP...");
-                        didRestart = true;
+                        // We just restarted Stremio with CDP — wait on the chosen port
+                        wsUrl = WaitForCDP(stremio, out lastPageId);
+                    }
+                    else
+                    {
+                        // Fresh detection — quick scan all ports (fast: ~1-2s)
+                        Thread.Sleep(3000);
+                        wsUrl = ScanForStremioCDP(out lastPageId);
+                    }
+
+                    if (wsUrl != null)
+                    {
+                        // CDP found — inject!
+                        waitingForRestart = false;
+                        restartRetries = 0;
+                        CleanupGlobalCdpVar();
+                        Thread.Sleep(2000);
+
+                        if (!File.Exists(FISPaths.BundlePath))
+                        {
+                            Logger.Log("[FIS] Bundle not found: " + FISPaths.BundlePath);
+                            Thread.Sleep(3000);
+                            continue;
+                        }
+
+                        string bundle = File.ReadAllText(FISPaths.BundlePath, Encoding.UTF8);
+                        Logger.Log("[FIS] Bundle loaded: " + (bundle.Length / 1024) + " KB");
+
+                        bool ok = CdpClient.InjectBundle(wsUrl, bundle);
+                        Logger.Log("[FIS] Injection: " + (ok ? "OK" : "FAILED"));
+                    }
+                    else if (restartRetries < 3)
+                    {
+                        // No CDP — restart Stremio with a free CDP port
+                        restartRetries++;
+                        waitingForRestart = true;
+                        Logger.Log("[FIS] No Stremio CDP (attempt " + restartRetries + "/3), restarting...");
                         RestartStremioWithCDP();
                         lastPid = -1;
                         Thread.Sleep(5000);
                         continue;
                     }
-
-                    if (wsUrl == null)
+                    else
                     {
-                        // Still failing — Stremio may have respawned with a new PID.
-                        // Allow one more restart attempt with this new PID.
-                        Logger.Log("[FIS] CDP still not available, will retry...");
-                        didRestart = false;
+                        Logger.Log("[FIS] CDP failed after 3 restarts, will retry later...");
+                        waitingForRestart = false;
+                        restartRetries = 0;
+                        CleanupGlobalCdpVar();
                         lastPid = -1;
-                        Thread.Sleep(5000);
+                        Thread.Sleep(30000);
                         continue;
                     }
-
-                    didRestart = false;
-                    // CDP connected — remove the temporary global env var
-                    CleanupGlobalCdpVar();
-                    Thread.Sleep(5000);
-
-                    if (!File.Exists(FISPaths.BundlePath))
-                    {
-                        Logger.Log("[FIS] Bundle not found: " + FISPaths.BundlePath);
-                        Thread.Sleep(3000);
-                        continue;
-                    }
-
-                    string bundle = File.ReadAllText(FISPaths.BundlePath, Encoding.UTF8);
-                    Logger.Log("[FIS] Bundle loaded: " + (bundle.Length / 1024) + " KB");
-
-                    bool ok = CdpClient.InjectBundle(wsUrl, bundle);
-                    Logger.Log("[FIS] Initial injection: " + (ok ? "OK" : "FAILED"));
                 }
                 else
                 {
+                    // Same PID — check for page changes (re-injection on navigation)
                     string currentPageId;
                     string currentWsUrl = CdpClient.FindStremioPage(activeCdpPort, out currentPageId);
                     if (currentWsUrl != null && currentPageId != null && currentPageId != lastPageId)
@@ -705,6 +721,27 @@ static class Injector
 
             Thread.Sleep(3000);
         }
+    }
+
+    /// Quick scan: try to find Stremio's CDP on any port in the range 9222-9231.
+    /// Pre-filters with IsPortListening to skip closed ports instantly.
+    static string ScanForStremioCDP(out string pageId)
+    {
+        pageId = null;
+        for (int port = FISPaths.CDP_PORT; port < FISPaths.CDP_PORT + 10; port++)
+        {
+            if (!IsPortListening(port)) continue;
+
+            string wsUrl = CdpClient.FindStremioPage(port, out pageId);
+            if (wsUrl != null)
+            {
+                activeCdpPort = port;
+                Logger.Log("[FIS] Found Stremio CDP on port " + port);
+                return wsUrl;
+            }
+        }
+        Logger.Log("[FIS] No Stremio CDP on ports " + FISPaths.CDP_PORT + "-" + (FISPaths.CDP_PORT + 9));
+        return null;
     }
 
     static void RestartStremioWithCDP()
@@ -792,7 +829,7 @@ static class Injector
         return preferred;
     }
 
-    /// Checks if anything is listening on the given port.
+    /// Checks if anything is listening on the given port (localhost only, fast).
     static bool IsPortListening(int port)
     {
         try
@@ -800,7 +837,7 @@ static class Injector
             using (TcpClient client = new TcpClient())
             {
                 IAsyncResult ar = client.BeginConnect("127.0.0.1", port, null, null);
-                bool connected = ar.AsyncWaitHandle.WaitOne(1000);
+                bool connected = ar.AsyncWaitHandle.WaitOne(500);
                 if (connected)
                 {
                     try { client.EndConnect(ar); } catch { }
