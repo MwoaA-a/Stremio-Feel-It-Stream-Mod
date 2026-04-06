@@ -606,6 +606,9 @@ static class Injector
 
     static void MonitorLoop()
     {
+        // Clean up any lingering global CDP env var from a previous crash
+        CleanupGlobalCdpVar();
+
         int lastPid = -1;
         string lastPageId = null;
         bool didRestart = false;
@@ -640,8 +643,8 @@ static class Injector
                     if (wsUrl == null && !didRestart)
                     {
                         // CDP not available — Stremio was launched without the env var,
-                        // or another WebView2 app stole the port. Restart Stremio as a
-                        // child of this process with a guaranteed free CDP port.
+                        // or another WebView2 app stole the port. Restart Stremio with
+                        // a temporary user-scope env var on a free port.
                         Logger.Log("[FIS] CDP not available, restarting Stremio with CDP...");
                         didRestart = true;
                         RestartStremioWithCDP();
@@ -652,13 +655,18 @@ static class Injector
 
                     if (wsUrl == null)
                     {
-                        Logger.Log("[FIS] CDP still not available after restart, will keep retrying...");
+                        // Still failing — Stremio may have respawned with a new PID.
+                        // Allow one more restart attempt with this new PID.
+                        Logger.Log("[FIS] CDP still not available, will retry...");
+                        didRestart = false;
                         lastPid = -1;
-                        Thread.Sleep(10000);
+                        Thread.Sleep(5000);
                         continue;
                     }
 
                     didRestart = false;
+                    // CDP connected — remove the temporary global env var
+                    CleanupGlobalCdpVar();
                     Thread.Sleep(5000);
 
                     if (!File.Exists(FISPaths.BundlePath))
@@ -718,23 +726,55 @@ static class Injector
         // that may have grabbed port 9222 via the old global env var.
         activeCdpPort = FindAvailablePort(FISPaths.CDP_PORT);
         string envValue = "--remote-debugging-port=" + activeCdpPort;
-        Environment.SetEnvironmentVariable(FISPaths.ENV_VAR_NAME, envValue);
-        Logger.Log("[FIS] Using CDP port " + activeCdpPort);
 
-        // Relaunch Stremio as child process — UseShellExecute=false means it inherits
-        // our env var, so only THIS Stremio instance gets CDP enabled.
+        // Set the env var at USER scope temporarily. This is necessary because
+        // stremio-shell-ng may internally respawn itself (single-instance check,
+        // auto-update), and the new process reads env from the user scope, not
+        // from our process tree. We remove this var once CDP connects.
+        try
+        {
+            Environment.SetEnvironmentVariable(FISPaths.ENV_VAR_NAME, envValue, EnvironmentVariableTarget.User);
+            Logger.Log("[FIS] Temporary global CDP env var set (port " + activeCdpPort + ")");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("[FIS] WARNING: Could not set user env var: " + ex.Message);
+        }
+
+        // Also set in current process for direct child inheritance
+        Environment.SetEnvironmentVariable(FISPaths.ENV_VAR_NAME, envValue);
+
+        // Relaunch Stremio
         try
         {
             ProcessStartInfo psi = new ProcessStartInfo();
             psi.FileName = FISPaths.StremioExe;
             psi.UseShellExecute = false;
             Process.Start(psi);
-            Logger.Log("[FIS] Stremio relaunched with per-process CDP on port " + activeCdpPort);
+            Logger.Log("[FIS] Stremio relaunched with CDP on port " + activeCdpPort);
         }
         catch (Exception ex)
         {
             Logger.Log("[FIS] Failed to relaunch Stremio: " + ex.Message);
         }
+    }
+
+    /// Removes the temporary user-scope CDP env var to prevent other WebView2 apps
+    /// from picking it up. Called after CDP connects or on injector startup.
+    static void CleanupGlobalCdpVar()
+    {
+        try
+        {
+            string val = Environment.GetEnvironmentVariable(
+                FISPaths.ENV_VAR_NAME, EnvironmentVariableTarget.User);
+            if (val != null && val.Contains("--remote-debugging-port"))
+            {
+                Environment.SetEnvironmentVariable(
+                    FISPaths.ENV_VAR_NAME, null, EnvironmentVariableTarget.User);
+                Logger.Log("[FIS] Cleaned up global CDP env var");
+            }
+        }
+        catch { }
     }
 
     /// Finds the first available port starting from the preferred port.
