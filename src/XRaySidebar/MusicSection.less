@@ -1,0 +1,54 @@
+// Feel It Stream - Music Section Styles
+
+.music-section {
+    display: flex;
+    flex-direction: column;
+    gap: 1rem;
+
+    .music-track {
+        display: flex;
+        flex-direction: column;
+        gap: 0.6rem;
+        padding: 0.8rem;
+        border-radius: 0.6rem;
+        background-color: rgba(255, 255, 255, 0.04);
+
+        .track-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.15rem;
+
+            .track-title {
+                font-size: 1.1rem;
+                font-weight: 600;
+                color: #FFFFFF;
+                font-family: 'Segoe UI', 'Roboto', sans-serif;
+            }
+
+            .track-artist {
+                font-size: 0.95rem;
+                color: rgba(255, 255, 255, 0.5);
+                font-family: 'Segoe UI', 'Roboto', sans-serif;
+            }
+        }
+
+        .spotify-embed {
+            border-radius: 0.5rem;
+            border: none;
+        }
+    }
+}
+
+.music-empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 3rem 1rem;
+
+    .empty-text {
+        font-size: 1rem;
+        color: rgba(255, 255, 255, 0.4);
+        font-family: 'Segoe UI', 'Roboto', sans-serif;
+        text-align: center;
+    }
+}

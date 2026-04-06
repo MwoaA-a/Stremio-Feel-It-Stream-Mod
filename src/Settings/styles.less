@@ -1,0 +1,69 @@
+// Feel It Stream - Settings Styles
+
+@xray-primary: #E63946;
+
+:import('~stremio/routes/Settings/components/Option/Option.less') {
+    option-content: content;
+}
+
+.url-input-row {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 0.8rem;
+    width: 100%;
+
+    .url-input {
+        flex: 1;
+        height: 3.5rem;
+        padding: 0 1rem;
+        border-radius: var(--border-radius);
+        background-color: var(--overlay-color);
+        color: var(--primary-foreground-color);
+        font-size: 1rem;
+        font-family: 'Segoe UI', 'Roboto', sans-serif;
+        border: 1px solid transparent;
+        transition: border-color 0.2s ease;
+
+        &:focus {
+            border-color: @xray-primary;
+        }
+    }
+
+    .save-button {
+        flex: none;
+        display: flex;
+        align-items: center;
+        gap: 0.4rem;
+        height: 3.5rem;
+        padding: 0 1.2rem;
+        border-radius: var(--border-radius);
+        background-color: @xray-primary;
+        cursor: pointer;
+        transition: opacity 0.2s ease;
+
+        &:hover {
+            opacity: 0.85;
+        }
+
+        .save-icon {
+            width: 1.4rem;
+            height: 1.4rem;
+            color: #FFFFFF;
+        }
+
+        .save-label {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #FFFFFF;
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+        }
+    }
+}
+
+.version-label {
+    font-size: 1rem;
+    color: @xray-primary;
+    font-weight: 600;
+    font-family: 'Segoe UI', 'Roboto', sans-serif;
+}

@@ -1,0 +1,77 @@
+// Feel It Stream - X-Ray Button Styles
+
+@xray-primary: #E63946;
+
+.xray-button {
+    flex: none;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    width: 4rem;
+    height: 5rem;
+    cursor: pointer;
+    transition: opacity 0.2s ease;
+
+    &:hover {
+        .xray-icon {
+            color: @xray-primary;
+        }
+
+        .pulse-dot {
+            fill: @xray-primary;
+        }
+    }
+
+    &.active {
+        .xray-icon {
+            color: @xray-primary;
+            filter: drop-shadow(0 0 4px fade(@xray-primary, 50%));
+        }
+
+        .pulse-dot {
+            fill: @xray-primary;
+            animation: xray-pulse 1.5s ease-in-out infinite;
+        }
+
+        .scan-line {
+            animation: xray-scan 2s ease-in-out infinite;
+        }
+    }
+
+    .xray-icon {
+        flex: none;
+        width: 2.5rem;
+        height: 2.5rem;
+        color: var(--primary-foreground-color);
+        transition: color 0.2s ease, filter 0.2s ease;
+    }
+
+    .pulse-dot {
+        fill: var(--primary-foreground-color);
+        transition: fill 0.2s ease;
+    }
+
+    .scan-line {
+        opacity: 0.6;
+    }
+}
+
+@keyframes xray-pulse {
+    0%, 100% {
+        opacity: 1;
+        r: 2;
+    }
+    50% {
+        opacity: 0.5;
+        r: 3;
+    }
+}
+
+@keyframes xray-scan {
+    0%, 100% {
+        opacity: 0.6;
+    }
+    50% {
+        opacity: 1;
+    }
+}

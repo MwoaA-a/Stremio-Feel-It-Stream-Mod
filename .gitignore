@@ -1,0 +1,7 @@
+node_modules/
+dist/
+.idea/
+*.exe
+*.dll
+.DS_Store
+.env

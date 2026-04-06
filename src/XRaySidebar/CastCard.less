@@ -1,0 +1,54 @@
+// Feel It Stream - Cast Card Styles
+
+@xray-primary: #E63946;
+
+.cast-card {
+    display: flex;
+    flex-direction: row;
+    align-items: center;
+    gap: 1rem;
+    padding: 0.8rem;
+    border-radius: 0.6rem;
+    background-color: rgba(255, 255, 255, 0.04);
+    transition: background-color 0.2s ease;
+
+    &:hover {
+        background-color: rgba(255, 255, 255, 0.08);
+    }
+
+    .cast-photo {
+        flex: none;
+        width: 4.5rem;
+        height: 4.5rem;
+        border-radius: 50%;
+        object-fit: cover;
+        border: 2px solid rgba(255, 255, 255, 0.1);
+    }
+
+    .cast-info {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 0.2rem;
+        min-width: 0;
+
+        .cast-name {
+            font-size: 1.15rem;
+            font-weight: 600;
+            color: #FFFFFF;
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .cast-role {
+            font-size: 1rem;
+            color: rgba(255, 255, 255, 0.5);
+            font-family: 'Segoe UI', 'Roboto', sans-serif;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+    }
+}
