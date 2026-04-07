@@ -4,7 +4,7 @@ const React = require('react');
 const { XRAY_API_BASE_URL } = require('../constants');
 
 const STORAGE_KEY = 'feelit_settings';
-const MOD_VERSION = '1.0.0';
+const MOD_VERSION = '1.0.1';
 
 const DEFAULT_SETTINGS = {
     apiUrl: XRAY_API_BASE_URL,

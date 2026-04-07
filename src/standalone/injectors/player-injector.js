@@ -82,6 +82,16 @@ const createPlayerInjector = () => {
         }
     };
 
+    // --- Click outside to close (standard UX pattern) ---
+
+    const onDocumentMouseDown = (e) => {
+        if (!sidebarOpen) return;
+        // Ignore clicks on the sidebar itself or the toggle button
+        if (sidebarAnchor && sidebarAnchor.contains(e.target)) return;
+        if (buttonEl && buttonEl.contains(e.target)) return;
+        setSidebarVisible(false);
+    };
+
     // --- Button (Pure DOM) ---
 
     const createButton = () => {
@@ -166,11 +176,15 @@ const createPlayerInjector = () => {
         sidebarInner = null;
         renderSidebar();
 
+        // Click outside sidebar → close it (closes when user opens episode list, etc.)
+        document.addEventListener('mousedown', onDocumentMouseDown, true);
+
         mounted = true;
         return true;
     };
 
     const unmount = () => {
+        document.removeEventListener('mousedown', onDocumentMouseDown, true);
         if (sidebarAnchor) {
             ReactDOM.unmountComponentAtNode(sidebarAnchor);
         }
@@ -195,10 +209,9 @@ const createPlayerInjector = () => {
     const inject = (id) => {
         currentId = id;
         if (mounted) {
-            // Re-render sidebar with new ID (new content)
-            sidebarOpen = false;
+            // Properly close sidebar (cleans up all CSS classes + overlay state)
+            setSidebarVisible(false);
             sidebarInner = null;
-            if (buttonEl) buttonEl.classList.remove('fis-active');
             renderSidebar();
             return;
         }

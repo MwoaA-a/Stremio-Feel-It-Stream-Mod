@@ -16,7 +16,7 @@ const { createPlayerInjector } = require('./injectors/player-injector');
 const { createSettingsInjector } = require('./injectors/settings-injector');
 const FIS_STYLES = require('./styles.css');
 
-const FIS_VERSION = '1.0.0';
+const FIS_VERSION = '1.0.1';
 
 const bootstrap = () => {
     // Guard against double bootstrap — set sentinel IMMEDIATELY to block

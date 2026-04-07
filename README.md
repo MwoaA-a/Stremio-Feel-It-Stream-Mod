@@ -99,11 +99,11 @@ FIS uses a three-part architecture that keeps Stremio completely untouched:
 
 ### Step by step
 
-1. **Environment variable** — The installer sets `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS=--remote-debugging-port=9222` (user scope). This tells Stremio's WebView2 to expose a CDP debugging port on localhost.
+1. **Dynamic CDP port** — The injector scans ports 9222–9231 to find an available one (avoids conflicts with other WebView2 apps like Windows Widgets). The CDP flag is passed per-process via a temporary user-scope environment variable, then cleaned up after connection.
 
-2. **Background injector** — A lightweight process (`FISInstaller.exe --inject`) runs in the background. It polls for the `stremio-shell-ng` process every 3 seconds.
+2. **Background injector** — A lightweight process (`FISInstaller.exe --inject`) runs in the background. It polls for the `stremio-shell-ng` process every 3 seconds. If Stremio isn't running with CDP enabled, the injector restarts it with the correct flags and shows a brief splash screen.
 
-3. **CDP connection** — When Stremio is detected, the injector queries `http://127.0.0.1:9222/json` to find the WebView2 page, then connects via WebSocket.
+3. **CDP connection** — When Stremio is detected, the injector queries `http://127.0.0.1:<port>/json` to find the WebView2 page, then connects via WebSocket.
 
 4. **Bundle injection** — The injector sends the full JavaScript bundle via `Runtime.evaluate`. The bundle bootstraps itself inside Stremio's page.
 
@@ -121,10 +121,9 @@ FIS uses a three-part architecture that keeps Stremio completely untouched:
 |------|----------|---------|
 | `feelit.bundle.js` | `%LOCALAPPDATA%\FIS\` | The JavaScript mod (downloaded from [feel-it.stream](https://feel-it.stream)) |
 | `fis.log` | `%LOCALAPPDATA%\FIS\` | Runtime logs for debugging |
-| Environment variable | User scope | Enables CDP port on Stremio's WebView2 |
 | Startup shortcut | `%APPDATA%\...\Start Menu\Programs\Startup\` | Auto-starts the injector with Windows |
 
-No files are added to or modified in Stremio's installation directory.
+The CDP debugging port is configured per-process at runtime (not as a persistent environment variable). No files are added to or modified in Stremio's installation directory.
 
 ---
 
@@ -144,7 +143,7 @@ npm install
 npm run build
 ```
 
-Output: `dist/feelit.bundle.js` (~177 KB, includes React 18 + ReactDOM)
+Output: `dist/feelit.bundle.js` (~181 KB, includes React 18 + ReactDOM)
 
 ### Build the Windows installer
 
@@ -154,6 +153,17 @@ C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe -nologo -target:winexe -
 ```
 
 Output: `installer/FISInstaller.exe` (~56 KB)
+
+### Local development injector
+
+For quick testing of local bundle changes without uploading to the VPS:
+
+```bash
+cd installer
+C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe -nologo -target:winexe -out:FISLocalInjector.exe fis-local-injector.cs
+```
+
+Run `FISLocalInjector.exe`, select your local `feelit.bundle.js`, and it will inject it into the running Stremio instance (replaces the current bundle for that session).
 
 ### Self-host the API
 
@@ -193,6 +203,7 @@ src/
   constants.js               # API URL, tab names, color palette
 installer/
   fis-installer.cs           # C# source — GUI installer + background injector
+  fis-local-injector.cs      # C# source — Local dev injector (pick a .js file, inject)
   fis.ico                    # Application icon (red glow sphere)
 webpack.config.js            # Webpack config (IIFE bundle, React bundled)
 package.json                 # npm dependencies
