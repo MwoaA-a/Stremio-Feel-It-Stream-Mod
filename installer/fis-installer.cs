@@ -671,8 +671,8 @@ static class Injector
 
     static void MonitorLoop()
     {
-        // Clean up any lingering global CDP env var from a previous crash
-        CleanupGlobalCdpVar();
+        // Pre-set CDP env var so the next Stremio launch gets CDP automatically.
+        PresetCdpEnvVar();
 
         int lastPid = -1;
         string lastPageId = null;
@@ -695,8 +695,10 @@ static class Injector
                         waitingForRestart = false;
                         restartRetries = 0;
                         CloseSplash();
+                        // Re-set env var for the next Stremio launch
+                        PresetCdpEnvVar();
                     }
-                    Thread.Sleep(3000);
+                    Thread.Sleep(1500);
                     continue;
                 }
 
@@ -715,9 +717,13 @@ static class Injector
                     }
                     else
                     {
-                        // Fresh detection — quick scan all ports
-                        Thread.Sleep(2000);
-                        wsUrl = ScanForStremioCDP(out lastPageId);
+                        // Fresh detection — aggressive scan with quick retries
+                        for (int scanAttempt = 0; scanAttempt < 4; scanAttempt++)
+                        {
+                            Thread.Sleep(500);
+                            wsUrl = ScanForStremioCDP(out lastPageId);
+                            if (wsUrl != null) break;
+                        }
 
                         if (wsUrl == null)
                         {
@@ -733,7 +739,7 @@ static class Injector
                         waitingForRestart = false;
                         restartRetries = 0;
                         CleanupGlobalCdpVar();
-                        Thread.Sleep(2000);
+                        Thread.Sleep(500);
 
                         if (!File.Exists(FISPaths.BundlePath))
                         {
@@ -759,7 +765,7 @@ static class Injector
                         Logger.Log("[FIS] No Stremio CDP (attempt " + restartRetries + "/3), restarting...");
                         RestartStremioWithCDP();
                         lastPid = -1;
-                        Thread.Sleep(5000);
+                        Thread.Sleep(2000);
                         continue;
                     }
                     else
@@ -783,7 +789,7 @@ static class Injector
                     {
                         Logger.Log("[FIS] Page changed (" + lastPageId + " -> " + currentPageId + ")");
                         lastPageId = currentPageId;
-                        Thread.Sleep(3000);
+                        Thread.Sleep(1000);
 
                         string bundle = File.ReadAllText(FISPaths.BundlePath, Encoding.UTF8);
                         bool ok = CdpClient.InjectBundle(currentWsUrl, bundle);
@@ -796,7 +802,7 @@ static class Injector
                 Logger.Log("[FIS] Monitor error: " + ex.Message);
             }
 
-            Thread.Sleep(3000);
+            Thread.Sleep(1500);
         }
     }
 
@@ -829,15 +835,12 @@ static class Injector
             Process[] procs = Process.GetProcessesByName(FISPaths.STREMIO_PROCESS);
             for (int i = 0; i < procs.Length; i++)
             {
-                try { procs[i].Kill(); } catch { }
+                try { procs[i].Kill(); procs[i].WaitForExit(3000); } catch { }
             }
         }
         catch { }
 
-        Thread.Sleep(2000);
-
         // Find a free port — avoids conflicts with Windows widgets / other WebView2 apps
-        // that may have grabbed port 9222 via the old global env var.
         activeCdpPort = FindAvailablePort(FISPaths.CDP_PORT);
         string envValue = "--remote-debugging-port=" + activeCdpPort;
 
@@ -874,7 +877,7 @@ static class Injector
     }
 
     /// Removes the temporary user-scope CDP env var to prevent other WebView2 apps
-    /// from picking it up. Called after CDP connects or on injector startup.
+    /// from picking it up. Called after CDP connects.
     static void CleanupGlobalCdpVar()
     {
         try
@@ -889,6 +892,25 @@ static class Injector
             }
         }
         catch { }
+    }
+
+    /// Pre-sets the CDP env var so the NEXT Stremio launch gets CDP for free.
+    /// Called at injector startup and whenever Stremio closes.
+    /// This eliminates the restart in the common case (injector starts before Stremio).
+    static void PresetCdpEnvVar()
+    {
+        try
+        {
+            activeCdpPort = FindAvailablePort(FISPaths.CDP_PORT);
+            string envValue = "--remote-debugging-port=" + activeCdpPort;
+            Environment.SetEnvironmentVariable(FISPaths.ENV_VAR_NAME, envValue, EnvironmentVariableTarget.User);
+            Environment.SetEnvironmentVariable(FISPaths.ENV_VAR_NAME, envValue);
+            Logger.Log("[FIS] Pre-set CDP env var (port " + activeCdpPort + ")");
+        }
+        catch (Exception ex)
+        {
+            Logger.Log("[FIS] WARNING: Could not pre-set env var: " + ex.Message);
+        }
     }
 
     /// Finds the first available port starting from the preferred port.
@@ -914,7 +936,7 @@ static class Injector
             using (TcpClient client = new TcpClient())
             {
                 IAsyncResult ar = client.BeginConnect("127.0.0.1", port, null, null);
-                bool connected = ar.AsyncWaitHandle.WaitOne(500);
+                bool connected = ar.AsyncWaitHandle.WaitOne(200);
                 if (connected)
                 {
                     try { client.EndConnect(ar); } catch { }
@@ -940,16 +962,15 @@ static class Injector
     static string WaitForCDP(Process stremio, out string pageId)
     {
         pageId = null;
-        for (int attempt = 0; attempt < 30; attempt++)
+        for (int attempt = 0; attempt < 20; attempt++)
         {
             if (stremio.HasExited) return null;
-            Thread.Sleep(1000);
+            Thread.Sleep(500);
 
-            // After 8 seconds, if nothing is listening on the CDP port, give up early.
-            // This avoids wasting 30s when Stremio was started without the CDP env var.
+            // After 4 seconds, if port not listening, bail early
             if (attempt == 8 && !IsPortListening(activeCdpPort))
             {
-                Logger.Log("[FIS] CDP port " + activeCdpPort + " not listening after 8s — Stremio needs restart");
+                Logger.Log("[FIS] CDP port " + activeCdpPort + " not listening after 4s — Stremio needs restart");
                 return null;
             }
 
